@@ -174,39 +174,34 @@ function restart() {
 }  #  End of function  restart.
 
 function build() {
-    if [ -d "${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules" ]; then
-        node_modules_dir="${OPENSHIFT_REPO_DIR}node_modules/"
-        for d in `ls -a ${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules`; do
-            [ -e "${node_modules_dir}$d" ]  ||  \
-                mv "${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules/$d" "$node_modules_dir"
-        done
-        rm -rf "${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules"
+    echo "Building NodeJS cartridge"
+    node_modules_dir="${OPENSHIFT_REPO_DIR}node_modules/"
+    saved_modules_dir="${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules"
+
+    # Ensure that we have the node_modules directory.
+    mkdir -p $node_modules_dir
+
+    if force_clean_build_enabled_for_latest_deployment; then
+        echo "Force-clean builds are enabled. Recreating npm modules" 1>&2
+
+        # Remove saved modules, if any.
+        rm -rf $saved_modules_dir
+
+        # Clean the npm cache. (This will clean the ~/.npm directory).
+        npm cache clean
+
+        # Link back the global modules.
+        link_global_modules $OPENSHIFT_NODEJS_VERSION
+    else
+        # Restore the saved node_modules from prior builds.
+        if [ -d "${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules" ]; then
+            for d in `ls -a ${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules`; do
+                [ -e "${node_modules_dir}$d" ]  ||  \
+                  mv "${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules/$d" "$node_modules_dir"
+            done
+            rm -rf "${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules"
+        fi
     fi
-
-    if [ -f "${OPENSHIFT_REPO_DIR}/.openshift/markers/force_clean_build" ]; then
-        echo ".openshift/markers/force_clean_build found!  Recreating npm modules" 1>&2
-        rm -rf "${OPENSHIFT_NODEJS_DIR}"/node_modules/*
-        rm -rf "${OPENSHIFT_HOMEDIR}"/.npm/*
-        rm -rf "${OPENSHIFT_REPO_DIR}"node_modules/*
-    fi
-
-    #  Newer versions of Node set tmp to $HOME/tmp, which is not available
-    npm config set tmp $OPENSHIFT_TMP_DIR
-
-    if [ -f "${OPENSHIFT_REPO_DIR}"/deplist.txt ]; then
-        mods=$(perl -ne 'print if /^\s*[^#\s]/' "${OPENSHIFT_REPO_DIR}"/deplist.txt)
-        [ -n "$mods" ]  &&  print_deprecation_warning
-        for m in $mods; do
-            echo "Checking npm module: $m"
-            echo
-            if is_node_module_installed "$m"; then
-                (cd "${OPENSHIFT_NODEJS_DIR}"; npm update "$m")
-            else
-                (cd "${OPENSHIFT_NODEJS_DIR}"; npm install "$m")
-            fi
-        done
-    fi
-
     # Workaround for failure in npm install when a package in package.json
     # points to a git commit.
     # This issue occurs because we are running in the context of a
@@ -215,7 +210,7 @@ function build() {
     unset GIT_WORK_TREE
 
     if [ -f "${OPENSHIFT_REPO_DIR}"/package.json ]; then
-        # @engineersamuel 10/17/2013 - `npm install -d` is too liberal and installs devDependencies.  
+        # @engineersamuel 10/17/2013 - `npm install -d` is too liberal and installs devDependencies.
         # Changing to --production to prevent that.
         (cd "${OPENSHIFT_REPO_DIR}"; npm install --production)
     fi
@@ -280,6 +275,18 @@ function tidy() {
   rm -rf ${OPENSHIFT_NODEJS_DIR}tmp/*
 }
 
+function pre-repo-archive() {
+    rm -rf ${OPENSHIFT_NODEJS_DIR}/tmp/{node_modules,saved.node_modules}
+
+    # If the node_modules/ directory exists, then "stash" it away for redeploy.
+    node_modules_dir="${OPENSHIFT_REPO_DIR}node_modules"
+    if [ -d "$node_modules_dir" ]; then
+      echo 'Saving away previously installed Node modules'
+      mv "$node_modules_dir" "${OPENSHIFT_NODEJS_DIR}/tmp/saved.node_modules"
+      mkdir -p "$node_modules_dir"
+    fi
+}
+
 #
 #  main():
 #
@@ -303,6 +310,7 @@ case "$1" in
     pre-build)           pre-build   ;;
     post-deploy)         post-deploy ;;
     tidy)                tidy        ;;
+    pre-repo-archive)    pre-repo-archive ;;
     *) exit 0;
 esac
 
